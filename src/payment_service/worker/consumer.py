@@ -4,6 +4,7 @@ from contextlib import suppress
 from typing import Any
 from uuid import UUID
 
+from faststream.middlewares import AckPolicy
 from faststream.rabbit import RabbitQueue
 
 from payment_service.db import SessionFactory
@@ -37,7 +38,7 @@ async def retry_or_dead_letter(event: dict[str, Any]) -> None:
     )
 
 
-@broker.subscriber(PAYMENTS_QUEUE)
+@broker.subscriber(PAYMENTS_QUEUE, ack_policy=AckPolicy.NACK_ON_ERROR)
 async def handle_payment_event(event: dict[str, Any]) -> None:
     try:
         await process_payment(SessionFactory, UUID(event["payment_id"]))
