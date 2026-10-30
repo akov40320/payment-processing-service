@@ -1,0 +1,78 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: payments
+      POSTGRES_USER: payments
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-payments}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U payments -d payments"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-payments}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-payments}
+    ports:
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  migrate:
+    build: .
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      API_KEY: ${API_KEY:?Set API_KEY in .env}
+      DATABASE_URL: postgresql+asyncpg://payments:${POSTGRES_PASSWORD:-payments}@postgres:5432/payments
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build: .
+    command: ["uvicorn", "payment_service.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      API_KEY: ${API_KEY:?Set API_KEY in .env}
+      DATABASE_URL: postgresql+asyncpg://payments:${POSTGRES_PASSWORD:-payments}@postgres:5432/payments
+    ports:
+      - "8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  consumer:
+    build: .
+    command: ["python", "-m", "payment_service.worker.consumer"]
+    environment:
+      API_KEY: ${API_KEY:?Set API_KEY in .env}
+      DATABASE_URL: postgresql+asyncpg://payments:${POSTGRES_PASSWORD:-payments}@postgres:5432/payments
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-payments}:${RABBITMQ_PASSWORD:-payments}@rabbitmq:5672/
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  rabbitmq_data:
